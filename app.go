@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"math"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -32,14 +31,15 @@ const (
 	SHOW_CURSOR = "\033[?25h"
 )
 
-type stepResult struct {
-	LogPath string
-	Err     error
+type plItem struct {
+	Index    string
+	Title    string
+	Duration string
 }
 
 func main() {
 	clearScreen()
-	defer func() { fmt.Print(SHOW_CURSOR, RESET) }()
+	defer fmt.Print(SHOW_CURSOR, RESET)
 	fmt.Print(HIDE_CURSOR)
 	banner()
 
@@ -97,7 +97,6 @@ func main() {
 	if code == "" {
 		dlFormat = "bv*+ba"
 	} else {
-		// Is selected code video-only? Then combine with best audio.
 		isVideoOnly := checkVideoOnly(code, videoURL, firstItemIndex)
 		if isVideoOnly {
 			fmt.Printf("%s🎧 Adding best audio…%s\n", CYAN, RESET)
@@ -107,17 +106,16 @@ func main() {
 		}
 	}
 
-	// Download with live progress
+	// Download
 	downloadList := filepath.Join(logDir, "downloaded_files.txt")
 	_ = os.WriteFile(downloadList, []byte{}, 0o644)
-	fmt.Printf("\n%s🚀 Starting download…%s\n", GREEN, RESET)
-	fmt.Println()
-	fmt.Println()
+	fmt.Printf("\n%s🚀 Starting download…%s\n\n", GREEN, RESET)
 
-	if err := runYtDlpWithProgress(dlFormat, playListFlag, rangeFlag, outputTemplate, videoURL, downloadList); err != nil {
+	if err := runYtDlpWithTextProgress(dlFormat, playListFlag, rangeFlag, outputTemplate, videoURL, downloadList); err != nil {
 		failExit(err.Error())
 	}
-	fmt.Printf("%s✅ Download(s) finished.%s\n", GREEN, RESET)
+
+	fmt.Printf("\n%s✅ Download(s) finished.%s\n", GREEN, RESET)
 
 	// Conversion
 	convert := strings.TrimSpace(prompt("🔄 Convert file(s)? (y/n): "))
@@ -132,12 +130,7 @@ func main() {
 				continue
 			}
 			outFile := replaceExt(inFile, outFmt)
-			baseIn := filepath.Base(inFile)
-			baseOut := filepath.Base(outFile)
-			fmt.Printf("\n%sConverting:%s %s%s%s → %s%s%s\n", CYAN, RESET, MAGENTA, baseIn, RESET, MAGENTA, baseOut, RESET)
-			fmt.Println()
-			fmt.Println()
-
+			fmt.Printf("\n%s🔄 Converting:%s %s → %s\n", CYAN, RESET, inFile, outFile)
 			dur := probeDuration(inFile)
 			if err := runFfmpegWithProgress(inFile, outFile, dur); err != nil {
 				fmt.Printf("%s✖ Convert failed:%s %s\n", RED, RESET, outFile)
@@ -152,7 +145,7 @@ func main() {
 	footer()
 }
 
-// ---------- UI Helpers ----------
+// ---------- UI ----------
 
 func banner() {
 	fmt.Printf("%s=============================================%s\n", CYAN, RESET)
@@ -175,65 +168,12 @@ func prompt(msg string) string {
 	fmt.Print(msg)
 	reader := bufio.NewReader(os.Stdin)
 	text, _ := reader.ReadString('\n')
-	return strings.TrimRight(text, "\r\n")
+	return strings.TrimSpace(text)
 }
 
 func failExit(msg string) {
 	fmt.Printf("%s✖ %s%s\n", RED, msg, RESET)
 	os.Exit(1)
-}
-
-func termCols() int {
-	if v := os.Getenv("COLUMNS"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n >= 40 {
-			return n
-		}
-	}
-	// Simple default; avoids external deps
-	return 80
-}
-
-func barWidth() int {
-	cols := termCols()
-	if cols > 70 {
-		return 50
-	}
-	return 40
-}
-
-func drawBar(percent int, width int) string {
-	if percent < 0 {
-		percent = 0
-	}
-	if percent > 100 {
-		percent = 100
-	}
-	filled := percent * width / 100
-	empty := width - filled
-	var b strings.Builder
-	b.WriteString("[")
-	for i := 0; i < filled; i++ {
-		b.WriteString("█")
-	}
-	for i := 0; i < empty; i++ {
-		b.WriteString("░")
-	}
-	b.WriteString("] ")
-	b.WriteString(fmt.Sprintf("%3d%%", percent))
-	return b.String()
-}
-
-func update2LineUI(header string, percent int, tail string) {
-	// Move cursor up two lines, clear, print header and bar+tail
-	fmt.Print("\033[2A") // up 2
-	fmt.Print("\033[K")  // clear line
-	fmt.Println(header)
-	fmt.Print("\033[K")
-	fmt.Print(drawBar(percent, barWidth()))
-	if tail != "" {
-		fmt.Print("  ", tail)
-	}
-	fmt.Println()
 }
 
 // ---------- Dependency Management ----------
@@ -255,7 +195,6 @@ func ensureDeps(logDir string) error {
 
 	switch osType {
 	case "linux":
-		// Detect package manager
 		switch {
 		case hasCmd("apt"):
 			if err := runStepSpinner(logDir, "Refreshing apt", "sudo", "apt", "update", "-y"); err != nil {
@@ -291,7 +230,6 @@ func ensureDeps(logDir string) error {
 			return err
 		}
 	case "windows":
-		// winget only available in modern Windows
 		if !hasCmd("winget") {
 			return errors.New("winget not found.")
 		}
@@ -324,7 +262,6 @@ func runStepSpinner(logDir, msg string, name string, args ...string) error {
 	cmd.Stdout = f
 	cmd.Stderr = f
 
-	// spinner
 	done := make(chan error, 1)
 	go func() {
 		done <- cmd.Run()
@@ -369,12 +306,6 @@ func printTail(path string, n int) {
 
 // ---------- Playlist ----------
 
-type plItem struct {
-	Index    string
-	Title    string
-	Duration string
-}
-
 func fetchPlaylistItems(url string) ([]plItem, error) {
 	cmd := exec.Command("yt-dlp", "--flat-playlist", "--print", "%(playlist_index)03d|%(title)s|%(duration_string)s", url)
 	out, err := cmd.Output()
@@ -405,9 +336,7 @@ func paginateSelect(items []plItem, pageSize int) []string {
 		for i := start; i < min(start+pageSize, total); i++ {
 			fmt.Printf("%s%s%s) %s %s[%s]%s\n", MAGENTA, items[i].Index, RESET, items[i].Title, DIM, items[i].Duration, RESET)
 		}
-		fmt.Println()
-		fmt.Println("n) Load next 10 items")
-		fmt.Println("0) Done selecting")
+		fmt.Println("\nn) Load next 10 items\n0) Done selecting")
 		fmt.Print("🎯 Enter selections (e.g., 1,3,5-7): ")
 
 		text, _ := reader.ReadString('\n')
@@ -427,7 +356,6 @@ func paginateSelect(items []plItem, pageSize int) []string {
 }
 
 func firstFromRanges(s string) int {
-	// "1,3,5-7" => 1; "5-7" => 5
 	s = strings.TrimSpace(s)
 	parts := strings.Split(s, ",")
 	if len(parts) == 0 {
@@ -462,10 +390,10 @@ func checkVideoOnly(code, url string, firstItem int) bool {
 	return false
 }
 
-// ---------- Download Progress (yt-dlp) ----------
+// ---------- Download Progress (text) ----------
 
-func runYtDlpWithProgress(dlFormat, playlistFlag, rangeFlag, outTpl, url, listPath string) error {
-	args := []string{"-f", dlFormat}
+func runYtDlpWithTextProgress(dlFormat, playlistFlag, rangeFlag, outTpl, url, listPath string) error {
+	args := []string{"-f", dlFormat, "-o", outTpl, "--newline", url}
 	if playlistFlag != "" {
 		args = append(args, playlistFlag)
 	}
@@ -473,144 +401,51 @@ func runYtDlpWithProgress(dlFormat, playlistFlag, rangeFlag, outTpl, url, listPa
 		parts := strings.Split(rangeFlag, " ")
 		args = append(args, parts...)
 	}
-	args = append(args, "-o", outTpl, url,
-		"--newline",
-		"--progress-template", "%(progress._percent_str)s|%(progress._speed_str)s|%(progress._eta_str)s|%(filename)s",
-		"--print", "before_dl:START|%(filename)s",
-		"--print", "after_move:FILE|%(filepath)s",
-	)
 
 	cmd := exec.Command("yt-dlp", args...)
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		return err
-	}
+	stdout, _ := cmd.StdoutPipe()
 	cmd.Stderr = cmd.Stdout
 
 	if err := cmd.Start(); err != nil {
 		return err
 	}
 
-	header := ""
-	tail := ""
-	percent := 0
-
-	sc := bufio.NewScanner(stdout)
-	// Print two empty lines for UI space
-	fmt.Println()
-	fmt.Println()
-	for sc.Scan() {
-		line := sc.Text()
-		switch {
-		case strings.HasPrefix(line, "START|"):
-			file := strings.TrimPrefix(line, "START|")
-			header = fmt.Sprintf("%s📥 Downloading:%s %s%s%s", CYAN, RESET, MAGENTA, filepath.Base(file), RESET)
-			tail = fmt.Sprintf("%sSpeed:%s --  %sETA:%s --", YELLOW, RESET, YELLOW, RESET)
-			update2LineUI(header, 0, tail)
-		case strings.HasPrefix(line, "FILE|"):
-			fp := strings.TrimPrefix(line, "FILE|")
-			appendLine(listPath, fp)
-		default:
-			// expect percent|speed|eta|filename
-			parts := strings.SplitN(line, "|", 4)
-			if len(parts) == 4 {
-				pct := sanitizePercent(parts[0])
-				spd := parts[1]
-				eta := parts[2]
-				file := filepath.Base(parts[3])
-				header = fmt.Sprintf("%s📥 Downloading:%s %s%s%s", CYAN, RESET, MAGENTA, file, RESET)
-				tail = fmt.Sprintf("%sSpeed:%s %s  %sETA:%s %s", YELLOW, RESET, nz(spd, "N/A"), YELLOW, RESET, nz(eta, "N/A"))
-				percent = pct
-				update2LineUI(header, percent, tail)
-			}
+	scanner := bufio.NewScanner(stdout)
+	for scanner.Scan() {
+		line := scanner.Text()
+		fmt.Println(line)
+		if strings.HasPrefix(line, "[download] Destination:") {
+			filePath := strings.TrimSpace(strings.TrimPrefix(line, "[download] Destination:"))
+			appendLine(listPath, filePath)
 		}
 	}
-	if err := cmd.Wait(); err != nil {
-		return err
-	}
-	return nil
+
+	return cmd.Wait()
 }
 
-func sanitizePercent(s string) int {
-	s = strings.TrimSpace(s)
-	s = strings.TrimRight(s, "%")
-	s = strings.TrimSpace(s)
-	// keep only digits and dot
-	buf := make([]rune, 0, len(s))
-	for _, r := range s {
-		if (r >= '0' && r <= '9') || r == '.' {
-			buf = append(buf, r)
-		}
-	}
-	if len(buf) == 0 {
-		return 0
-	}
-	f, err := strconv.ParseFloat(string(buf), 64)
-	if err != nil {
-		return 0
-	}
-	return int(math.Floor(f + 0.00001))
-}
-
-func nz(s, def string) string {
-	if strings.TrimSpace(s) == "" {
-		return def
-	}
-	return s
-}
-
-func appendLine(path, line string) {
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
-	if err != nil {
-		return
-	}
-	defer f.Close()
-	_, _ = f.WriteString(line + "\n")
-}
-
-// ---------- Conversion (ffmpeg) ----------
+// ---------- Conversion ----------
 
 func probeDuration(path string) int {
-	// returns integer seconds
-	cmd := exec.Command("ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", path)
+	cmd := exec.Command("ffprobe", "-v", "error", "-show_entries", "format=duration",
+		"-of", "default=noprint_wrappers=1:nokey=1", path)
 	out, err := cmd.Output()
 	if err != nil {
 		return 0
 	}
-	s := strings.TrimSpace(string(out))
-	f, err := strconv.ParseFloat(s, 64)
-	if err != nil {
-		return 0
-	}
-	if f <= 0 {
-		return 0
-	}
-	return int(math.Round(f))
+	f, _ := strconv.ParseFloat(strings.TrimSpace(string(out)), 64)
+	return int(f + 0.5)
 }
 
 func runFfmpegWithProgress(inFile, outFile string, durationSec int) error {
-	// ffmpeg -progress pipe:1
 	cmd := exec.Command("ffmpeg", "-y", "-hide_banner", "-loglevel", "error", "-i", inFile, outFile, "-progress", "pipe:1")
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		return err
-	}
+	stdout, _ := cmd.StdoutPipe()
 	cmd.Stderr = cmd.Stdout
 
 	if err := cmd.Start(); err != nil {
 		return err
 	}
 
-	// Two lines for UI
-	fmt.Println()
-	fmt.Println()
-
-	header := fmt.Sprintf("%s🔄 Converting:%s %s%s%s → %s%s%s", CYAN, RESET, MAGENTA, filepath.Base(inFile), RESET, MAGENTA, filepath.Base(outFile), RESET)
-	update2LineUI(header, 0, "")
-
 	reader := bufio.NewReader(stdout)
-	var percent int
-
 	for {
 		line, err := reader.ReadString('\n')
 		if err != nil {
@@ -620,41 +455,11 @@ func runFfmpegWithProgress(inFile, outFile string, durationSec int) error {
 			return err
 		}
 		line = strings.TrimSpace(line)
-		if line == "" {
-			continue
-		}
-		kv := strings.SplitN(line, "=", 2)
-		if len(kv) != 2 {
-			continue
-		}
-		key, val := kv[0], kv[1]
-		switch key {
-		case "out_time_ms":
-			if durationSec > 0 {
-				// out_time_ms is microseconds
-				v, _ := strconv.ParseInt(val, 10, 64)
-				secs := int(v / 1_000_000)
-				if durationSec <= 0 {
-					durationSec = 1
-				}
-				p := secs * 100 / max(1, durationSec)
-				if p < 0 {
-					p = 0
-				}
-				if p > 100 {
-					p = 100
-				}
-				percent = p
-			} else {
-				percent = 0
-			}
-			update2LineUI(header, percent, "")
-		case "progress":
-			if val == "end" {
-				update2LineUI(header, 100, "")
-			}
+		if line != "" {
+			fmt.Println(line)
 		}
 	}
+
 	return cmd.Wait()
 }
 
@@ -717,14 +522,18 @@ func replaceExt(path, newExt string) string {
 	return strings.TrimSuffix(path, ext) + newExt
 }
 
+func appendLine(path, line string) {
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|
+	os.O_WRONLY, 0o644)
+	if err != nil {
+		return
+	}
+	defer f.Close()
+	_, _ = f.WriteString(line + "\n")
+}
+
 func min(a, b int) int {
 	if a < b {
-		return a
-	}
-	return b
-}
-func max(a, b int) int {
-	if a > b {
 		return a
 	}
 	return b
