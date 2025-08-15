@@ -15,8 +15,8 @@ if ! command -v go &> /dev/null; then
 fi
 
 # Variables
-GOFILE="main.go"
-OUTNAME="myprogram"
+GOFILE="app.go"
+OUTNAME="YT-Pro-Downloader"
 BUILD_DIR="build"
 
 # Create build folder

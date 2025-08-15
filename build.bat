@@ -14,8 +14,8 @@ if %errorlevel% neq 0 (
 )
 
 REM Set variables
-set "GOFILE=main.go"
-set "OUTFILE=myprogram.exe"
+set "GOFILE=app.go"
+set "OUTFILE=YT-Pro-Downloader.exe"
 
 REM Build
 echo Building %OUTFILE% from %GOFILE%...
