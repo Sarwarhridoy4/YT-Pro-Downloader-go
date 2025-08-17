@@ -50,7 +50,6 @@ func main() {
 	if err := ensureDeps(logDir); err != nil {
 		failExit(err.Error())
 	}
-
 	fmt.Printf("%s✅ All dependencies are installed.%s\n\n", GREEN, RESET)
 
 	// Mode selection
@@ -70,6 +69,7 @@ func main() {
 		outputTemplate = "%(title)s.%(ext)s"
 		fmt.Printf("\n%s📡 Fetching available formats…%s\n", YELLOW, RESET)
 		runPassthrough("yt-dlp", "-F", videoURL)
+
 	case "2":
 		videoURL = prompt("📜 Enter playlist URL: ")
 		fmt.Printf("\n%s📡 Fetching playlist details…%s\n", YELLOW, RESET)
@@ -77,7 +77,7 @@ func main() {
 		if err != nil {
 			failExit(err.Error())
 		}
-		selections := paginateSelect(items, 10)
+		selections := paginateSelectWithConfirmation(items, 10)
 		if len(selections) > 0 {
 			rangeFlag = "--playlist-items " + strings.Join(selections, ",")
 			firstItemIndex = firstFromRanges(selections[0])
@@ -87,6 +87,7 @@ func main() {
 
 		fmt.Printf("\n%s📡 Fetching formats for playlist item %d…%s\n", YELLOW, firstItemIndex, RESET)
 		runPassthrough("yt-dlp", "-F", "--playlist-items", strconv.Itoa(firstItemIndex), videoURL)
+
 	default:
 		failExit("Invalid choice.")
 	}
@@ -114,13 +115,12 @@ func main() {
 	if err := runYtDlpWithTextProgress(dlFormat, playListFlag, rangeFlag, outputTemplate, videoURL, downloadList); err != nil {
 		failExit(err.Error())
 	}
-
 	fmt.Printf("\n%s✅ Download(s) finished.%s\n", GREEN, RESET)
 
 	// Conversion
 	convert := strings.TrimSpace(prompt("🔄 Convert file(s)? (y/n): "))
 	if strings.EqualFold(convert, "y") {
-		outFmt := strings.TrimSpace(prompt("🎯 Enter output format: "))
+		outFmt := strings.TrimSpace(prompt("🎯 Enter output format (e.g., mp4, mp3, mkv, wav): "))
 		files := mustLoadDownloaded(downloadList)
 		if len(files) == 0 {
 			files = guessRecentFiles(".")
@@ -324,7 +324,8 @@ func fetchPlaylistItems(url string) ([]plItem, error) {
 	return items, nil
 }
 
-func paginateSelect(items []plItem, pageSize int) []string {
+// New: paginate selection + confirmation
+func paginateSelectWithConfirmation(items []plItem, pageSize int) []string {
 	total := len(items)
 	start := 0
 	var selections []string
@@ -332,9 +333,11 @@ func paginateSelect(items []plItem, pageSize int) []string {
 
 	for start < total {
 		clearScreen()
-		fmt.Printf("%s%sPlaylist Videos (Items %d to %d of %d):%s\n", CYAN, BOLD, start+1, min(start+pageSize, total), total, RESET)
+		fmt.Printf("%s%sPlaylist Videos (Items %d to %d of %d):%s\n",
+			CYAN, BOLD, start+1, min(start+pageSize, total), total, RESET)
 		for i := start; i < min(start+pageSize, total); i++ {
-			fmt.Printf("%s%s%s) %s %s[%s]%s\n", MAGENTA, items[i].Index, RESET, items[i].Title, DIM, items[i].Duration, RESET)
+			fmt.Printf("%s%s%s) %s %s[%s]%s\n", MAGENTA, items[i].Index, RESET,
+				items[i].Title, DIM, items[i].Duration, RESET)
 		}
 		fmt.Println("\nn) Load next 10 items\n0) Done selecting")
 		fmt.Print("🎯 Enter selections (e.g., 1,3,5-7): ")
@@ -342,17 +345,54 @@ func paginateSelect(items []plItem, pageSize int) []string {
 		text, _ := reader.ReadString('\n')
 		text = strings.TrimSpace(text)
 
-		if text == "n" || text == "N" {
+		switch strings.ToLower(text) {
+		case "n":
 			start += pageSize
 			continue
-		} else if text == "0" {
-			break
-		} else if text != "" {
-			selections = append(selections, text)
+		case "0":
+			goto CONFIRM_SELECTION
+		default:
+			if text != "" {
+				selections = append(selections, text)
+			}
+			start += pageSize
 		}
-		start += pageSize
 	}
-	return selections
+
+CONFIRM_SELECTION:
+	// Flatten ranges
+	var allIndices []string
+	for _, sel := range selections {
+		for _, part := range strings.Split(sel, ",") {
+			part = strings.TrimSpace(part)
+			if strings.Contains(part, "-") {
+				bounds := strings.SplitN(part, "-", 2)
+				startIdx, _ := strconv.Atoi(bounds[0])
+				endIdx, _ := strconv.Atoi(bounds[1])
+				for i := startIdx; i <= endIdx; i++ {
+					allIndices = append(allIndices, strconv.Itoa(i))
+				}
+			} else if part != "" {
+				allIndices = append(allIndices, part)
+			}
+		}
+	}
+
+	// Show confirmation
+	fmt.Printf("\n%s✅ You selected %d videos:%s\n", GREEN, len(allIndices), RESET)
+	for _, idx := range allIndices {
+		i, _ := strconv.Atoi(idx)
+		if i >= 1 && i <= len(items) {
+			fmt.Printf("%s%s) %s [%s]%s\n", MAGENTA, items[i-1].Index, items[i-1].Title,
+				items[i-1].Duration, RESET)
+		}
+	}
+	confirm := prompt("\nDo you want to proceed with download? (y/n): ")
+	if !strings.EqualFold(confirm, "y") {
+		failExit("Download cancelled by user.")
+	}
+
+	return allIndices
 }
 
 func firstFromRanges(s string) int {
@@ -436,7 +476,7 @@ func probeDuration(path string) int {
 	return int(f + 0.5)
 }
 
-func runFfmpegWithProgress(inFile, outFile string, durationSec int) error {
+func runFfmpegWithProgress(inFile, outFile string, _ int) error {
 	cmd := exec.Command("ffmpeg", "-y", "-hide_banner", "-loglevel", "error", "-i", inFile, outFile, "-progress", "pipe:1")
 	stdout, _ := cmd.StdoutPipe()
 	cmd.Stderr = cmd.Stdout
@@ -524,7 +564,7 @@ func replaceExt(path, newExt string) string {
 
 func appendLine(path, line string) {
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|
-	os.O_WRONLY, 0o644)
+		os.O_WRONLY, 0o644)
 	if err != nil {
 		return
 	}
